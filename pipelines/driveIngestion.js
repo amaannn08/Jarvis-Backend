@@ -24,17 +24,35 @@ const GOOGLE_DOCS_MIME = 'application/vnd.google-apps.document'
 // ─────────────────────────────────────────────────────────────────────────────
 
 function getDriveClient() {
+  const tokenEnv = process.env.GOOGLE_TOKEN_JSON
   const tokenPath = join(process.cwd(), process.env.GOOGLE_TOKEN_PATH || 'google-token.json')
+  const secretPath = '/etc/secrets/google-token.json'
   const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
 
+  let tokens = null
+  let activeTokenPath = null
+
+  if (tokenEnv) {
+    try {
+      tokens = typeof tokenEnv === 'string' ? JSON.parse(tokenEnv) : tokenEnv
+    } catch (e) {
+      console.error('[driveIngest] Failed to parse GOOGLE_TOKEN_JSON env var:', e.message)
+    }
+  } else if (existsSync(tokenPath)) {
+    tokens = JSON.parse(readFileSync(tokenPath, 'utf8'))
+    activeTokenPath = tokenPath
+  } else if (existsSync(secretPath)) {
+    tokens = JSON.parse(readFileSync(secretPath, 'utf8'))
+    activeTokenPath = secretPath
+  }
+
   // OAuth2 path (CLIENT_ID + CLIENT_SECRET + saved token)
-  if (existsSync(tokenPath)) {
+  if (tokens) {
     const CLIENT_ID = process.env.CLIENT_ID
     const CLIENT_SECRET = process.env.CLIENT_SECRET
     if (!CLIENT_ID || !CLIENT_SECRET) {
       throw new Error('CLIENT_ID and CLIENT_SECRET must be set in .env to use OAuth2 token')
     }
-    const tokens = JSON.parse(readFileSync(tokenPath, 'utf8'))
     const oauth2Client = new google.auth.OAuth2(
       CLIENT_ID,
       CLIENT_SECRET,
@@ -42,11 +60,17 @@ function getDriveClient() {
     )
     oauth2Client.setCredentials(tokens)
 
-    // Auto-persist refreshed tokens so they don't expire
+    // Auto-persist refreshed tokens if a file path exists
     oauth2Client.on('tokens', (newTokens) => {
       const merged = { ...tokens, ...newTokens }
-      writeFileSync(tokenPath, JSON.stringify(merged, null, 2))
-      console.log('[driveIngest] OAuth2 tokens refreshed and saved')
+      if (activeTokenPath) {
+        try {
+          writeFileSync(activeTokenPath, JSON.stringify(merged, null, 2))
+          console.log('[driveIngest] OAuth2 tokens refreshed and saved')
+        } catch {
+          // ignore write errors on read-only secret mounts
+        }
+      }
     })
 
     return google.drive({ version: 'v3', auth: oauth2Client })
